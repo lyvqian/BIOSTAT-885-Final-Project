@@ -279,6 +279,8 @@ plot(density(T_star), ylim=c(0,0.08), main="",xlab="T*")
 lines(x, y, lty=2)
 ```
 
+The distribution of T* is similar to a normal distribution with mean=-33.96851, sd=sqrt(27.02437).
+
 ```{r}
 pvalue <- pnorm(0.659407, mean=-33.96851, sd=sqrt(27.02437), lower.tail = FALSE)
 pvalue
@@ -345,6 +347,8 @@ y <- dnorm(x, mean=-33.81921, sd=sqrt(26.99354))
 plot(density(T_star), ylim=c(0,0.08), main="",xlab="T*")
 lines(x, y, lty=2)
 ```
+
+The distribution of T* is similar to a normal distribution with mean=-33.81921, sd=sqrt(26.99354).
 
 ```{r}
 pvalue <- pnorm(0.6508812, mean=-33.81921, sd=sqrt(26.99354), lower.tail = FALSE)
