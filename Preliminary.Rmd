@@ -1,0 +1,133 @@
+```{r}
+library(ggplot2)
+library(mgcv)
+library(survival)
+library(dplyr)
+```
+
+```{r}
+jasa
+# birth.dt:	birth date
+# accept.dt:	acceptance into program
+# tx.date:	transplant date
+# fu.date:	end of followup
+# fustat:	dead or alive (dead=1, alive=0)
+# surgery:	prior bypass surgery
+# age:	age (in years)
+# futime:	followup time
+# wait.time:	time before transplant
+# transplant:	transplant indicator
+# mismatch:	mismatch score
+# hla.a2:	particular type of mismatch
+# mscore:	another mismatch score
+# reject:	rejection occurred
+```
+
+## Exploratory Data Analysis
+
+```{r}
+hist(jasa$age, xlab="Age (years)", main="Histogram of Patient Age in the Program")
+summary(jasa$age)
+```
+
+```{r}
+jasa[jasa$age==min(jasa$age),]
+```
+
+The person at the age of 8 can be an outlier. Check its data. It didn't receive transplant and died by the end of the program. There's no other data around it, so the data point will significantly influence the fitting. As a result, we will remove it from the analysis.
+
+```{r}
+# Make labels for the transplant status and survival outcome.
+jasa$transplant_label <- factor(jasa$transplant, levels=c(0,1), labels=c("Transplant: No", "Transplant: Yes"))
+jasa$fustat_label <- factor(jasa$fustat, levels=c(0,1), labels=c("Survived","Died") )
+jasa$fustat_rev <- -(jasa$fustat-1)
+```
+
+```{r}
+# Remove the outlier
+clean <-jasa[which(jasa$age!=min(jasa$age)),]
+```
+
+```{r}
+data_summary <- clean %>%
+  group_by(reject, fustat_label) %>%
+  summarise(count = n()) %>%
+  mutate(total = sum(count),
+         percent = (count / total) * 100)
+data_summary
+```
+
+There exist NA's for the rejection variable in the dataset.
+
+```{r}
+data_summary <- clean %>%
+  group_by(transplant, fustat_label) %>%
+  summarise(count = n()) %>%
+  mutate(total = sum(count),
+         percent = (count / total) * 100)
+data_summary
+```
+
+```{r}
+ggplot(data_summary, aes(x = factor(transplant), y = percent, fill = factor(fustat_label))) +
+  geom_bar(stat = "identity", position = position_dodge(), alpha = 0.8) +
+  geom_text(aes(label = sprintf("%.1f%%", percent), group = factor(fustat_label)),
+            position = position_dodge(width = 0.9), vjust = 1.5) +
+  scale_y_continuous("Percentage", labels = scales::percent_format(scale=1)) +
+  labs(x = "Transplant (0 = No, 1 = Yes)", fill = "Survival Outcome") +
+  ggtitle("Survival Outcomes by Transplant Status") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(color = "black", fill = NA),
+        panel.grid = element_blank(), 
+        panel.background = element_blank())
+```
+
+```{r}
+ggplot(clean, aes(x = factor(fustat_label), y = age)) +
+  geom_boxplot() +
+  facet_wrap(~transplant_label) +  
+  labs(x = "Survival Outcome", y = "Age", title = "Age by Survival Outcome Across Transplant Statuses") +
+  theme(plot.title = element_text(hjust = 0.5),
+        panel.border = element_rect(color = "black", fill = NA), 
+        panel.grid = element_blank(), 
+        panel.background = element_blank()) 
+```
+
+```{r}
+summary(clean[clean$transplant==1,]$age)
+summary(clean[clean$transplant==0,]$age)
+
+wilcox.test(clean[clean$transplant==1,]$age, clean[clean$transplant==0,]$age)
+
+```
+
+There is no significant difference between the age distributions in the two groups.
+
+## GLM models
+
+```{r}
+glm_main <- glm(fustat_rev ~ age, data = clean, family = binomial())
+summary(glm_main)
+```
+
+```{r}
+glm_main <- glm(fustat_rev ~ age + transplant, data = clean, family = binomial())
+summary(glm_main)
+```
+
+```{r}
+glm_int <- glm(fustat_rev ~ age + transplant + age:transplant, data = clean, family = binomial())
+summary(glm_int)
+```
+
+```{r}
+xval=seq(min(clean$age),max(clean$age),length.out=500)
+plot(clean$age, clean$fustat_rev, xlab="Age (years)", ylab="Probability of Survival")
+fitted_0 <- predict(glm_int, newdata = data.frame(age=xval, transplant=rep(0,length(xval))), type = "response")
+fitted_1 <- predict(glm_int, newdata = data.frame(age=xval, transplant=rep(1,length(xval))), type = "response")
+lines(xval, fitted_0, col = "red", lwd = 2)
+lines(xval, fitted_1, col = "blue", lwd = 2)
+legend("right", legend=c("Transplant: Yes","Transplant: No"), ncol=1, col=c("blue","red"), lty=1, cex=0.75)
+```
+

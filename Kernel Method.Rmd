@@ -1,0 +1,409 @@
+```{r}
+library(ggplot2)
+library(mgcv)
+library(survival)
+library(dplyr)
+library(locfit)
+```
+
+```{r}
+jasa
+```
+
+```{r}
+jasa$transplant_label <- factor(jasa$transplant, levels=c(0,1), labels=c("Transplant: No", "Transplant: Yes"))
+jasa$fustat_label <- factor(jasa$fustat, levels=c(0,1), labels=c("Survived","Died") )
+jasa$fustat_rev <- -(jasa$fustat-1)
+```
+
+```{r}
+clean <-jasa[which(jasa$age!=min(jasa$age)),]
+```
+
+```{r}
+glm_main <- glm(fustat_rev ~ age + transplant, data = clean, family = binomial())
+summary(glm_main)
+```
+
+```{r}
+glm_int <- glm(fustat_rev ~ age + transplant + age*transplant, data = clean, family = binomial())
+summary(glm_int)
+```
+
+## Local Kernel Smoothing Algorithm
+
+```{r}
+u_kernel_h <- function(u, h){
+  ifelse(abs(u/h) <= 1, 1/(2*h), 0)
+}
+
+gaussian_kernel_h <- function(u, h){
+  return((1/h)*dnorm(u/h))
+}
+
+e_kernel_h <- function(u, h){
+  u_h <- ifelse(abs(u/h)<=1, u/h, 0)
+  return((1/h)*0.75*(1- u_h^2))
+}
+
+```
+
+```{r}
+# Fit the interaction model
+logistic_estimation_int <- function(data_x, data_y, xval, covariate, h, kernel_h) {
+  n <- length(xval)
+  estimates_0 <- rep(NA, n)
+  estimates_1 <- rep(NA, n)
+  theta_0 <- rep(NA, n)
+  theta_1 <- rep(NA, n)
+  se_theta_0 <- rep(NA, n)
+  se_theta_1 <- rep(NA, n)
+  se_c <- rep(NA, n)
+  
+  for (i in 1:n) {
+    x <- xval[i]
+    x_i <- data_x
+    y_i <- data_y
+    x_diff  <- x_i - x
+    wt <- kernel_h(x_i - x, h)
+    m <- glm(y_i ~ x_diff  + covariate + x_diff*covariate, family = binomial(link="logit"), weights = wt)
+    theta_0[i] <- m$coefficients[1]
+    theta_1[i] <- m$coefficients[3]
+    estimates_0[i] <- expit(theta_0[i])
+    estimates_1[i] <- expit(theta_0[i] + theta_1[i])
+    se_theta_0[i] <- summary(m)$coefficients[1,2]/h
+    se_theta_1[i] <- summary(m)$coefficients[3,2]/h
+    
+    vcov_mat <- vcov(m)
+    se_c[i] <- sqrt(vcov_mat[1,1]+vcov_mat[3,3]+2*vcov_mat[1,3])/h
+  }
+  
+  lower_0 <- theta_0 - 1.96 * se_theta_0
+  upper_0 <- theta_0 + 1.96 * se_theta_0
+  lower_1 <- theta_1 - 1.96 * se_theta_1
+  upper_1 <- theta_1 + 1.96 * se_theta_1
+  upper_c <- theta_0 + theta_1 + 1.96*se_c
+  lower_c <- theta_0 + theta_1 - 1.96*se_c
+  
+  out=list(theta_0=theta_0, theta_1=theta_1, estimates_0=estimates_0, estimates_1=estimates_1, lower_0=lower_0, upper_0=upper_0, lower_1=lower_1, upper_1=upper_1, lower_c=lower_c, upper_c=upper_c)
+}
+```
+
+```{r}
+# Fit the main model
+logistic_estimation_nint <- function(data_x, data_y, xval, covariate, h, kernel_h) {
+  n <- length(xval)
+  estimates_0 <- rep(NA, n)
+  estimates_1 <- rep(NA, n)
+  theta_0 <- rep(NA, n)
+  theta_1 <- rep(NA, n)
+  
+  for (i in 1:n) {
+    x <- xval[i]
+    x_i <- data_x
+    y_i <- data_y
+    x_diff  <- x_i - x
+    wt <- kernel_h(x_i - x, h)
+    m <- glm(y_i ~ x_diff + covariate, family = binomial(link="logit"), weights = wt)
+    theta_0[i] <- m$coefficients[1]
+    theta_1[i] <- m$coefficients[3]
+    estimates_0[i] <- expit(theta_0[i])
+    estimates_1[i] <- expit(theta_0[i] + theta_1[i])
+    
+  }
+  
+  out=list(theta_0=theta_0, theta_1=theta_1, estimates_0=estimates_0, estimates_1=estimates_1)
+}
+```
+
+## K-fold cross validation for selecting the optimal bandwidth
+
+```{r, warning=FALSE}
+# k-fold cross validation to select bandwidth
+k_fold_cv <- function(data_x, data_y, covariate, h, kernel_h, func, k){
+  data_size = length(data_x)
+  group <- sample((1:data_size) %% k + 1)
+  
+  error <- 0
+  loglik <- 0
+  
+  for (j in 1:k){
+    idx <- which(group==j)
+    x_train <- data_x[-idx]
+    y_train <- data_y[-idx]
+    covariate_train <- covariate[-idx]
+    xval <- data_x[idx]
+    res <- func(data_x = x_train, data_y = y_train, xval = xval, covariate = covariate_train, h=h, kernel_h = kernel_h)
+    y_hat <- expit(res$theta_0+res$theta_1*covariate[idx])
+    # calculating the error
+    error <- error + (data_y[idx] - y_hat)^2/length(idx) 
+    
+    # calculate the log likelihood
+    loglik_j <- sum(data_y[idx]*(res$theta_0+res$theta_1*covariate[idx]) - log(1 + exp(res$theta_0+res$theta_1*covariate[idx])))
+    loglik <- loglik + loglik_j
+  }
+  error <- error / k
+  loglik <- loglik / k
+  
+  out=list(error= error, loglik = loglik)
+}
+
+```
+
+```{r,warning=FALSE}
+set.seed(885)
+error_vec <- rep(NA, 40)
+loglik_vec <- rep(NA, 40)
+for (i in 1:40){
+  res <- k_fold_cv(data_x = clean$age, data_y = clean$fustat_rev, covariate = clean$transplant,kernel_h=gaussian_kernel_h, func=logistic_estimation_nint, h=i, k=10)
+  error_vec[i] <- res$error
+  loglik_vec[i] <- res$loglik
+}
+```
+
+```{r}
+plot(loglik_vec)
+which.max(loglik_vec)
+```
+
+```{r,warning=FALSE}
+set.seed(885)
+error_vec <- rep(NA, 40)
+loglik_vec <- rep(NA, 40)
+for (i in 1:40){
+  res <- k_fold_cv(data_x = clean$age, data_y = clean$fustat_rev, covariate = clean$transplant,kernel_h=gaussian_kernel_h, func=logistic_estimation_int,h=i, k=10)
+  error_vec[i] <- res$error
+  loglik_vec[i] <- res$loglik
+}
+```
+
+```{r}
+plot(loglik_vec)
+which.max(loglik_vec)
+```
+
+## Plot the fitted curve and confidence bands
+
+```{r, warning=FALSE}
+xval=seq(min(clean$age),max(clean$age),length.out=500)
+
+res_int <- logistic_estimation_int(data_x = clean$age, data_y = clean$fustat_rev, xval=xval, covariate=clean$transplant, h=29, kernel_h = gaussian_kernel_h)
+
+# construct confidence bands
+upper_0 <- exp(res_int$upper_0)/(1+exp(res_int$upper_0))
+lower_0 <- exp(res_int$lower_0)/(1+exp(res_int$lower_0))
+
+upper_c <- expit(res_int$upper_c)
+lower_c <- expit(res_int$lower_c)
+```
+
+```{r}
+plot(x=clean$age, y=clean$fustat_rev, xlab = "Age (years)", ylab = "Probability of Survival")
+lines(xval, res_int$estimates_1, col="blue")
+lines(xval, res_int$estimates_0, col="red")
+polygon(x=c(xval, rev(xval)), y=c(lower_0,rev(upper_0)), col = rgb(1, 0, 0, 0.2), border=NA)
+polygon(x=c(xval, rev(xval)), y=c(lower_c,rev(upper_c)), col = rgb(0, 0, 1, 0.2), border=NA)
+legend("right", legend=c("Transplant: Yes","Transplant: No"), ncol=1, col=c("blue","red"), lty=1, cex=0.75)
+```
+
+## Plot theta's with confidence bands
+
+```{r}
+par(mfcol=c(1,2))
+plot(x=xval, y=res_int$theta_0, xlab = "Age (years)", ylab = "theta_0(Age)", type="l", ylim=c(-4.5,0))
+lines(xval, res_int$upper_0, col="black", lty=2)
+lines(xval, res_int$lower_0, col="black", lty=2)
+
+plot(x=xval, y=res_int$theta_1, xlab = "Age (years)", ylab = "theta_1(Age)", type="l", ylim=c(0.5,2.8))
+lines(xval, res_int$upper_1, col="black", lty=2)
+lines(xval, res_int$lower_1, col="black", lty=2)
+```
+
+## Hypothesis testing
+
+## Parametric/nonparametric main models 
+
+```{r}
+pred_reduce <- predict(glm_main)
+
+loglik_glm_main <- logLik(glm_main)
+loglik_glm_main
+
+```
+
+```{r,warning=FALSE}
+res_my_main <- logistic_estimation_nint(data_x=clean$age, data_y=clean$fustat_rev, xval=clean$age, covariate=clean$transplant, h=29, kernel_h=gaussian_kernel_h) 
+
+pred_my_main <- exp(res_my_main$theta_0+res_my_main$theta_1*clean$transplant)/(1+exp(res_my_main$theta_0+res_my_main$theta_1*clean$transplant))
+
+loglik_my_main <- sum(clean$fustat_rev * log(pred_my_main) + (1 - clean$fustat_rev) * log(1 - pred_my_main))
+loglik_my_main
+```
+
+```{r}
+T1<- 2*(loglik_my_main - as.numeric(loglik_glm_main))
+T1
+```
+
+```{r, warning=FALSE}
+set.seed(885)
+T_star <- rep(NA, 500)
+for (i in 1:500){
+  samp <- sample(1/(1+exp(-pred_reduce)), size=length(pred_reduce), replace=TRUE)
+  
+  res_my_main<-logistic_estimation_nint(data_x=clean$age, data_y=samp, xval=clean$age, covariate=clean$transplant, h=29, kernel_h=gaussian_kernel_h) 
+  pred_my_main <- exp(res_my_main$theta_0+res_my_main$theta_1*clean$transplant)/(1+exp(res_my_main$theta_0+res_my_main$theta_1*clean$transplant))
+  loglik_bs_main <- sum(samp * log(pred_my_main) + (1 - samp) * log(1 - pred_my_main))
+  
+  glm_bs_main <- glm(samp ~  clean$transplant * clean$age, family = binomial())
+  loglik_glm_bs_main <- logLik(glm_bs_main)
+  
+  T_star[i] <- 2*(loglik_bs_main - as.numeric(loglik_glm_bs_main))
+}
+
+```
+
+```{r}
+var(T_star)
+mean(T_star)
+
+```
+
+```{r}
+x <- seq(-50, -10, by = 0.1) # Range of x values
+
+# Compute the cumulative probability using pchisq
+y <- dnorm(x, mean=-33.96851, sd=sqrt(27.02437))
+
+plot(density(T_star), ylim=c(0,0.08), main="",xlab="T*")
+lines(x, y, lty=2)
+```
+
+```{r}
+pvalue <- pnorm(0.659407, mean=-33.96851, sd=sqrt(27.02437), lower.tail = FALSE)
+pvalue
+```
+
+```{r}
+pvalue <- pnorm(0.659407, mean=-33.96851, sd=sqrt(27.02437), lower.tail = TRUE)
+pvalue
+```
+
+## Parametric/nonparametric interaction models 
+
+```{r}
+pred_reduce <- predict(glm_int)
+
+loglik_glm_int <- logLik(glm_int)
+loglik_glm_int
+
+```
+
+```{r,warning=FALSE}
+res_my_int <- logistic_estimation_int(data_x=clean$age, data_y=clean$fustat_rev, xval=clean$age, covariate=clean$transplant, h=29, kernel_h=gaussian_kernel_h) 
+
+pred_my_int <- exp(res_my_int$theta_0+res_my_int$theta_1*clean$transplant)/(1+exp(res_my_int$theta_0+res_my_int$theta_1*clean$transplant))
+
+loglik_my_int <- sum(clean$fustat_rev * log(pred_my_int) + (1 - clean$fustat_rev) * log(1 - pred_my_int))
+loglik_my_int
+```
+
+```{r}
+T1<- 2*(loglik_my_int - as.numeric(loglik_glm_int))
+T1
+```
+
+```{r, warning=FALSE}
+set.seed(885)
+T_star <- rep(NA, 500)
+for (i in 1:500){
+  samp <- sample(1/(1+exp(-pred_reduce)), size=length(pred_reduce), replace=TRUE)
+  
+  res_my_int<-logistic_estimation_int(data_x=clean$age, data_y=samp, xval=clean$age, covariate=clean$transplant, h=29, kernel_h=gaussian_kernel_h) 
+  pred_my_int <- exp(res_my_int$theta_0+res_my_int$theta_1*clean$transplant)/(1+exp(res_my_int$theta_0+res_my_int$theta_1*clean$transplant))
+  loglik_bs_int <- sum(samp * log(pred_my_int) + (1 - samp) * log(1 - pred_my_int))
+  
+  glm_bs_int <- glm(samp ~  clean$transplant * clean$age, family = binomial())
+  loglik_glm_bs_int <- logLik(glm_bs_int)
+  
+  T_star[i] <- 2*(loglik_bs_int - as.numeric(loglik_glm_bs_int))
+}
+
+```
+
+```{r}
+var(T_star)
+mean(T_star)
+```
+
+```{r}
+x <- seq(-50, -10, by = 0.1) # Range of x values
+
+# Compute the cumulative probability using pchisq
+y <- dnorm(x, mean=-33.81921, sd=sqrt(26.99354))
+
+plot(density(T_star), ylim=c(0,0.08), main="",xlab="T*")
+lines(x, y, lty=2)
+```
+
+```{r}
+pvalue <- pnorm(0.6508812, mean=-33.81921, sd=sqrt(26.99354), lower.tail = FALSE)
+pvalue
+```
+
+```{r}
+pvalue <- pnorm(0.6508812, mean=-33.81921, sd=sqrt(26.99354), lower.tail = TRUE)
+pvalue
+```
+
+## Nonparametric main/interaction models 
+
+```{r,warning=FALSE}
+res_my_main <- logistic_estimation_nint(data_x=clean$age, data_y=clean$fustat_rev, xval=clean$age, covariate=clean$transplant, h=29, kernel_h=gaussian_kernel_h) 
+
+pred_my_main <- exp(res_my_main$theta_0+res_my_main$theta_1*clean$transplant)/(1+exp(res_my_main$theta_0+res_my_main$theta_1*clean$transplant))
+
+loglik_my_main <- sum(clean$fustat_rev * log(pred_my_main) + (1 - clean$fustat_rev) * log(1 - pred_my_main))
+loglik_my_main
+```
+
+```{r,warning=FALSE}
+res_my_int <- logistic_estimation_int(data_x=clean$age, data_y=clean$fustat_rev, xval=clean$age, covariate=clean$transplant, h=29, kernel_h=gaussian_kernel_h) 
+
+pred_my_int <- exp(res_my_int$theta_0+res_my_int$theta_1*clean$transplant)/(1+exp(res_my_int$theta_0+res_my_int$theta_1*clean$transplant))
+
+loglik_my_int <- sum(clean$fustat_rev * log(pred_my_int) + (1 - clean$fustat_rev) * log(1 - pred_my_int))
+loglik_my_int
+```
+
+```{r}
+T1<- 2*(loglik_my_int - loglik_my_main)
+T1
+```
+
+```{r, warning=FALSE}
+set.seed(885)
+T_star <- rep(NA, 1000)
+for (i in 1:1000){
+  samp <- sample(1/(1+exp(-pred_my_main)), size=length(pred_my_main), replace=TRUE)
+  
+  res_my_int<-logistic_estimation_int(data_x=clean$age, data_y=samp, xval=clean$age, covariate=clean$transplant, h=29, kernel_h=gaussian_kernel_h) 
+  pred_my_int <- exp(res_my_int$theta_0+res_my_int$theta_1*clean$transplant)/(1+exp(res_my_int$theta_0+res_my_int$theta_1*clean$transplant))
+  loglik_bs_int <- sum(samp * log(pred_my_int) + (1 - samp) * log(1 - pred_my_int))
+  
+  res_my_main<-logistic_estimation_nint(data_x=clean$age, data_y=samp, xval=clean$age, covariate=clean$transplant, h=29, kernel_h=gaussian_kernel_h) 
+  pred_my_main <- exp(res_my_main$theta_0+res_my_main$theta_1*clean$transplant)/(1+exp(res_my_main$theta_0+res_my_main$theta_1*clean$transplant))
+  loglik_bs_main <- sum(samp * log(pred_my_main) + (1 - samp) * log(1 - pred_my_main))
+  
+  T_star[i] <- 2*(loglik_bs_int - loglik_bs_main)
+}
+
+```
+
+```{r}
+var(T_star)
+mean(T_star)
+plot(density(T_star))
+```
+
+
