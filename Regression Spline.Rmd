@@ -1,0 +1,184 @@
+```{r}
+library(ggplot2)
+library(mgcv)
+library(survival)
+library(dplyr)
+library(splines)
+library(lmtest)
+```
+
+```{r}
+jasa
+```
+
+```{r}
+jasa$transplant_label <- factor(jasa$transplant, levels=c(0,1), labels=c("Transplant: No", "Transplant: Yes"))
+jasa$fustat_label <- factor(jasa$fustat, levels=c(0,1), labels=c("Survived","Died") )
+jasa$fustat_rev <- -(jasa$fustat-1)
+```
+
+```{r}
+clean <-jasa[which(jasa$age!=min(jasa$age)),]
+```
+
+```{r}
+glm_main <- glm(fustat_rev ~ age + transplant, data = clean, family = binomial())
+summary(glm_main)
+```
+
+```{r}
+glm_int <- glm(fustat_rev ~ age + transplant + age*transplant, data = clean, family = binomial())
+summary(glm_int)
+```
+
+## AIC to select optimal df
+
+```{r, warning=FALSE}
+# for the main effect model
+m_grid <- seq(1,10,by=1)
+aic_vec <- rep(NA, length(m_grid))
+for (i in 1:length(m_grid)){
+  m <- m_grid[i]
+  res <- glm(fustat_rev ~ bs(age, df=m+4) + transplant, family = binomial(link = "logit"), 
+             data = clean) 
+  aic_vec[i] <- AIC(res)
+}
+m_grid[which.min(aic_vec)]
+```
+
+```{r}
+plot(aic_vec)
+```
+
+```{r, warning=FALSE}
+reg_main <- glm(fustat_rev ~ bs(age, df = 5) + transplant,
+             family = binomial, data = clean)
+summary(reg_main)
+```
+
+```{r}
+ages <- sort(clean$age)
+transplants <- clean$transplant[order(clean$age)]
+xval <- seq(min(clean$age),max(clean$age),length.out=100)
+transplant_0 <- rep(0, length(xval))
+transplant_1 <- rep(1, length(xval))
+
+reg_main_0 <- predict(reg_main, newdata = data.frame(age=xval, transplant=transplant_0), type = "response")
+reg_main_1 <- predict(reg_main, newdata = data.frame(age=xval, transplant=transplant_1), type = "response")
+plot(clean$age, clean$fustat_rev, xlab = "Age (years)", ylab = "Survival Probability", main="Regression Spline Fitting Curves")
+lines(xval, reg_main_0, col = "red", lwd = 2)
+lines(xval, reg_main_1, col = "blue", lwd = 2)
+legend("right", legend=c("Transplant: Yes","Transplant: No"), 
+       ncol=1, col=c("blue","red"), lwd=2, lty=1, cex=0.75)
+```
+
+```{r}
+pred_0 <- predict(reg_main, newdata = data.frame(age=xval, transplant=transplant_0), type = "response",se.fit=TRUE)
+upper_0 <- pred_0$fit + 1.96*pred_0$se.fit
+lower_0 <- pred_0$fit - 1.96*pred_0$se.fit
+pred_1 <- predict(reg_main, newdata = data.frame(age=xval, transplant=transplant_1), type = "response",se.fit=TRUE)
+upper_1 <- pred_1$fit + 1.96*pred_1$se.fit
+lower_1 <- pred_1$fit - 1.96*pred_1$se.fit
+```
+
+```{r}
+plot(clean$age, clean$fustat_rev, xlab = "Age (years)", ylab = "Survival Probability", main="Regression Spline Smoothing")
+lines(xval, pred_1$fit, col = "blue", lwd = 2)
+polygon(x=c(xval, rev(xval)), y=c(lower_1,rev(upper_1)), col = rgb(0, 0, 1, 0.2), border=NA)
+lines(xval, pred_0$fit, col = "red", lwd = 2)
+polygon(x=c(xval, rev(xval)), y=c(lower_0,rev(upper_0)), col = rgb(1, 0, 0, 0.2), border=NA)
+legend("right", legend=c("Transplant: Yes","Transplant: No"), 
+       ncol=1, col=c("blue","red"), lwd=2, lty=1, cex=0.75)
+```
+
+```{r, warning=FALSE}
+# for the interaction model
+m_grid <- seq(1,10,by=1)
+aic_vec <- rep(NA, length(m_grid))
+for (i in 1:length(m_grid)){
+  m <- m_grid[i]
+  res <- glm(fustat_rev ~ bs(age, df=m+4) + transplant + bs(age, df=m+4)*transplant, family = binomial(link = "logit"), data = clean) 
+  aic_vec[i] <- AIC(res)
+}
+m_grid[which.min(aic_vec)]
+```
+
+```{r}
+plot(aic_vec)
+```
+
+```{r, warning=FALSE}
+reg_int <- glm(fustat_rev ~ bs(age, df = 7)*transplant,
+             family = binomial(link = "logit"), data = clean)
+
+summary(reg_int)
+```
+
+```{r}
+reg_int_0 <- predict(reg_int, newdata = data.frame(age=xval, transplant=transplant_0), type = "response")
+reg_int_1 <- predict(reg_int, newdata = data.frame(age=xval, transplant=transplant_1), type = "response")
+plot(clean$age, clean$fustat_rev, xlab = "Age (years)", ylab = "Survival", main="Regression Spline Fitting Curves")
+lines(xval, reg_int_0, col = "red", lwd = 2)
+lines(xval, reg_int_1, col = "blue", lwd = 2)
+legend("right", legend=c("Transplant: Yes","Transplant: No"), 
+       ncol=1, col=c("blue","red"), lwd=2, lty=1, cex=0.75)
+```
+
+```{r, warning=FALSE}
+reg_int <- glm(fustat_rev ~ bs(age, df=5,degree=2) + transplant + bs(age, df=5,degree=2)*transplant, family = binomial(link = "logit"), data = clean) 
+
+summary(reg_int)
+```
+
+```{r}
+xval <- seq(min(clean$age),max(clean$age),length.out=100)
+transplant_0 <- rep(0, length(xval))
+transplant_1 <- rep(1, length(xval))
+
+reg_int_0 <- predict(reg_int, newdata = data.frame(age=xval, transplant=transplant_0), type = "response")
+reg_int_1 <- predict(reg_int, newdata = data.frame(age=xval, transplant=transplant_1), type = "response")
+
+plot(clean$age, clean$fustat_rev, xlab = "Age (years)", ylab = "Survival Probability", main="Regression Spline Fitting Curves")
+lines(xval, reg_int_0, col = "red", lwd = 2)
+lines(xval, reg_int_1, col = "blue", lwd = 2)
+legend("right", legend=c("Transplant: Yes","Transplant: No"), 
+       ncol=1, col=c("blue","red"), lwd=2, lty=1, cex=0.75)
+```
+
+
+```{r}
+pred_0 <- predict(reg_int, newdata = data.frame(age=xval, transplant=transplant_0), type = "response",se.fit=TRUE)
+upper_0 <- pred_0$fit + 1.96*pred_0$se.fit
+lower_0 <- pred_0$fit - 1.96*pred_0$se.fit
+pred_1 <- predict(reg_int, newdata = data.frame(age=xval, transplant=transplant_1), type = "response",se.fit=TRUE)
+upper_1 <- pred_1$fit + 1.96*pred_1$se.fit
+lower_1 <- pred_1$fit - 1.96*pred_1$se.fit
+```
+
+```{r}
+plot(clean$age, clean$fustat_rev, xlab = "Age (years)", ylab = "Survival Probability", main="Regression Spline Smoothing")
+lines(xval, pred_1$fit, col = "blue", lwd = 2)
+polygon(x=c(xval, rev(xval)), y=c(lower_1,rev(upper_1)), col = rgb(0, 0, 1, 0.2), border=NA)
+lines(xval, pred_0$fit, col = "red", lwd = 2)
+polygon(x=c(xval, rev(xval)), y=c(lower_0,rev(upper_0)), col = rgb(1, 0, 0, 0.2), border=NA)
+legend("right", legend=c("Transplant: Yes","Transplant: No"), 
+       ncol=1, col=c("blue","red"), lwd=2, lty=1, cex=0.75)
+```
+
+## Likelihood Ratio Test
+
+```{r}
+lrtest(reg_main,glm_main)
+```
+
+```{r}
+anova(reg_main, glm_main, test = "Chisq")
+```
+
+```{r}
+lrtest(reg_main, reg_int)
+```
+
+```{r}
+anova(reg_main, reg_int, test = "Chisq")
+```
