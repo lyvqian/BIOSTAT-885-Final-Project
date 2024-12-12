@@ -1,0 +1,170 @@
+```{r}
+library(ggplot2)
+library(mgcv)
+library(survival)
+library(dplyr)
+library(splines)
+library(lmtest)
+```
+
+```{r}
+jasa
+```
+
+```{r}
+jasa$transplant_label <- factor(jasa$transplant, levels=c(0,1), labels=c("Transplant: No", "Transplant: Yes"))
+jasa$fustat_label <- factor(jasa$fustat, levels=c(0,1), labels=c("Survived","Died") )
+jasa$fustat_rev <- -(jasa$fustat-1)
+```
+
+```{r}
+clean <-jasa[which(jasa$age!=min(jasa$age)),]
+```
+
+```{r}
+glm_main <- glm(fustat_rev ~ age + transplant, data = clean, family = binomial())
+summary(glm_main)
+```
+
+```{r}
+glm_int <- glm(fustat_rev ~ age + transplant + age*transplant, data = clean, family = binomial())
+summary(glm_int)
+```
+
+## Main model
+
+```{r}
+gam_main_para <- gam(fustat_rev ~ age + transplant , family=binomial(), data=clean)
+summary(gam_main_para)
+```
+
+```{r}
+gam_main <- gam(fustat_rev ~ s(age) + transplant , family=binomial(), data=clean)
+summary(gam_main)
+```
+
+```{r}
+AIC(gam_main_para, gam_main)
+```
+
+```{r}
+xval <- seq(min(clean$age),max(clean$age),length.out=500)
+transplant_0 <- rep(0, length(xval))
+transplant_1 <- rep(1, length(xval))
+```
+
+```{r}
+pred_gam_main_0 <- predict(gam_main, newdata = data.frame(age=xval, transplant=transplant_0), type="response", se.fit = TRUE)
+upper_gam_0 <- pred_gam_main_0$fit + 1.96*pred_gam_main_0$se.fit
+lower_gam_0 <- pred_gam_main_0$fit - 1.96*pred_gam_main_0$se.fit
+```
+
+```{r}
+pred_gam_main_1 <- predict(gam_main, newdata = data.frame(age=xval, transplant=transplant_1), type="response", se.fit = TRUE)
+upper_gam_1 <- pred_gam_main_1$fit + 1.96*pred_gam_main_1$se.fit
+lower_gam_1 <- pred_gam_main_1$fit - 1.96*pred_gam_main_1$se.fit
+```
+
+```{r}
+plot(clean$age, clean$fustat_rev, xlab = "Age (years)", ylab = "Survival Probability", main="Smoothing Spline-based Estimation of Survival Probabilities")
+lines(xval, pred_gam_main_1$fit, col = "blue", lwd = 2)
+polygon(x=c(xval, rev(xval)), y=c(lower_gam_1,rev(upper_gam_1)), col = rgb(0, 0, 1, 0.2), border=NA)
+lines(xval, pred_gam_main_0$fit, col = "red", lwd = 2)
+polygon(x=c(xval, rev(xval)), y=c(lower_gam_0,rev(upper_gam_0)), col = rgb(1, 0, 0, 0.2), border=NA)
+legend("right", legend=c("Transplant: Yes","Transplant: No"), ncol=1, col=c("blue","red"), lty=1, cex=0.75)
+```
+
+## Interaction model
+
+```{r}
+gam_int <- gam(fustat_rev ~ s(age) + s(age, by=transplant) , family=binomial(), data=clean)
+summary(gam_int)
+```
+
+```{r}
+pred_gam_int_0 <- predict(gam_int, newdata = data.frame(age=xval, transplant=transplant_0), type="response", se.fit = TRUE)
+upper_gam_0 <- pred_gam_int_0$fit + 1.96*pred_gam_int_0$se.fit
+lower_gam_0 <- pred_gam_int_0$fit - 1.96*pred_gam_int_0$se.fit
+```
+
+```{r}
+pred_gam_int_1 <- predict(gam_int, newdata = data.frame(age=xval, transplant=transplant_1), type="response", se.fit = TRUE)
+upper_gam_1 <- pred_gam_int_1$fit + 1.96*pred_gam_int_1$se.fit
+lower_gam_1 <- pred_gam_int_1$fit - 1.96*pred_gam_int_1$se.fit
+```
+
+```{r}
+plot(clean$age, clean$fustat_rev, xlab = "Age (years)", ylab = "Survival Probability", main="Smoothing Spline-based Estimation of Survival Probabilities")
+lines(xval, pred_gam_int_1$fit, col = "blue", lwd = 2)
+polygon(x=c(xval, rev(xval)), y=c(lower_gam_1,rev(upper_gam_1)), col = rgb(0, 0, 1, 0.2), border=NA)
+lines(xval, pred_gam_int_0$fit, col = "red", lwd = 2)
+polygon(x=c(xval, rev(xval)), y=c(lower_gam_0,rev(upper_gam_0)), col = rgb(1, 0, 0, 0.2), border=NA)
+legend("right", legend=c("Transplant: Yes","Transplant: No"), ncol=1, col=c("blue","red"), lty=1, cex=0.75)
+```
+
+## Hypothesis Testing
+
+```{r}
+anova(gam_main, gam_int, "chisq")
+```
+
+```{r}
+chi2_stat <- 0.027089
+df <- 1.0041
+
+p_value <- 1 - pchisq(chi2_stat, df)
+p_value
+```
+
+```{r}
+lrtest(gam_main, gam_int)
+```
+
+```{r}
+anova(glm_main, gam_main, "chisq")
+```
+
+```{r}
+chi2_stat <- 9.8586
+df <- 3.189
+
+p_value <- 1 - pchisq(chi2_stat, df)
+p_value
+```
+
+```{r}
+lrtest(glm_main, gam_main)
+```
+
+```{r}
+anova(glm_int, gam_int, "chisq")
+```
+
+```{r}
+chi2_stat <- 9.7967
+df <- 3.1951
+
+p_value <- 1 - pchisq(chi2_stat, df)
+p_value
+```
+
+```{r}
+lrtest(glm_int, gam_int)
+```
+
+```{r}
+AIC(gam_main)
+AIC(gam_int)
+AIC(glm_main)
+AIC(glm_int)
+```
+
+```{r}
+plot(gam_main)
+```
+
+```{r}
+par(mfcol=c(1,2))
+plot(gam_int)
+```
+
