@@ -182,3 +182,8 @@ lrtest(reg_main, reg_int)
 ```{r}
 anova(reg_main, reg_int, test = "Chisq")
 ```
+
+```{r}
+AIC(glm_main,glm_int,reg_main, reg_int)
+```
+
